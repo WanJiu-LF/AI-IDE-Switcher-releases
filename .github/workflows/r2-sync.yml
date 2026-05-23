@@ -73,35 +73,37 @@ jobs:
           echo "📋 Manifest:"
           cat /tmp/assets/latest.json
 
+      - name: Install wrangler
+        run: npm install -g wrangler@latest
+
       - name: Upload to Cloudflare R2
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          command: |
-            TAG="${{ github.ref_name }}"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          TAG="${{ github.ref_name }}"
 
-            # Upload release assets
-            for f in /tmp/assets/*; do
-              [ -f "$f" ] || continue
-              filename=$(basename "$f")
-              [ "$filename" = "latest.json" ] && continue
-              echo "⬆ Uploading ${filename}..."
-              wrangler r2 object put "${{ env.R2_BUCKET }}/releases/${TAG}/${filename}" --file "$f" --content-type "application/octet-stream"
-            done
+          # Upload release assets
+          for f in /tmp/assets/*; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            [ "$filename" = "latest.json" ] && continue
+            echo "⬆ Uploading ${filename}..."
+            wrangler r2 object put "${{ env.R2_BUCKET }}/releases/${TAG}/${filename}" --file "$f" --content-type "application/octet-stream" --cache-control "public, max-age=31536000, immutable"
+          done
 
-            # Upload manifest
-            echo "⬆ Uploading latest.json..."
-            wrangler r2 object put "${{ env.R2_BUCKET }}/latest.json" --file /tmp/assets/latest.json --content-type "application/json"
+          # Upload manifest (short cache so CDN updates quickly)
+          echo "⬆ Uploading latest.json..."
+          wrangler r2 object put "${{ env.R2_BUCKET }}/latest.json" --file /tmp/assets/latest.json --content-type "application/json" --cache-control "public, max-age=60"
 
-            # Upload download page from source repo
-            echo "⬆ Uploading download.html..."
-            wrangler r2 object put "${{ env.R2_BUCKET }}/download.html" --file source/download.html --content-type "text/html; charset=utf-8"
+          # Upload download page (short cache)
+          echo "⬆ Uploading download.html..."
+          wrangler r2 object put "${{ env.R2_BUCKET }}/download.html" --file source/download.html --content-type "text/html; charset=utf-8" --cache-control "public, max-age=60"
 
-            # Upload tutorial PDF from source repo
-            echo "⬆ Uploading tutorial.pdf..."
-            wrangler r2 object put "${{ env.R2_BUCKET }}/tutorial.pdf" --file "source/docs/AI IDE Switcher使用教程.pdf" --content-type "application/pdf"
+          # Upload tutorial PDF
+          echo "⬆ Uploading tutorial.pdf..."
+          wrangler r2 object put "${{ env.R2_BUCKET }}/tutorial.pdf" --file "source/docs/AI IDE Switcher使用教程.pdf" --content-type "application/pdf" --cache-control "public, max-age=86400"
 
-            echo "✅ All files uploaded to R2"
+          echo "✅ All files uploaded to R2"
 
       - name: Summary
         run: |
