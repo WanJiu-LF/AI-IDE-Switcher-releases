@@ -1,0 +1,120 @@
+name: Sync Release to R2
+
+on:
+  release:
+    types: [published]
+
+env:
+  R2_BUCKET: ai-ide-switcher
+  SOURCE_REPO: WanJiu-LF/AI-IDE-Switcher
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout source repo for static assets
+        uses: actions/checkout@v4
+        with:
+          repository: WanJiu-LF/AI-IDE-Switcher
+          token: ${{ secrets.PAT_TOKEN }}
+          path: source
+
+      - name: Download release assets
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "📦 Syncing release ${TAG} from WanJiu-LF/AI-IDE-Switcher-releases"
+
+          mkdir -p /tmp/assets
+
+          ASSETS=$(curl -sL \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/WanJiu-LF/AI-IDE-Switcher-releases/releases/tags/${TAG}")
+
+          echo "$ASSETS" | jq -r '.assets[] | .browser_download_url' | while read -r url; do
+            filename=$(basename "$url")
+            echo "  ⬇ Downloading ${filename}..."
+            curl -sL -o "/tmp/assets/${filename}" "$url"
+          done
+
+          echo "Downloaded files:"
+          ls -lh /tmp/assets/
+
+      - name: Generate latest.json manifest
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+
+          cd /tmp/assets
+
+          echo '{}' | jq \
+            --arg ver "$VERSION" \
+            --arg tag "$TAG" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $ver, tag: $tag, date: $date, files: []}' > /tmp/assets/latest.json
+
+          for f in *; do
+            [ -f "$f" ] || continue
+            [ "$f" = "latest.json" ] && continue
+            SIZE=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+            SHA256=$(sha256sum "$f" | cut -d' ' -f1)
+            jq --arg name "$f" \
+               --argjson size "$SIZE" \
+               --arg sha256 "$SHA256" \
+               --arg gh "https://github.com/WanJiu-LF/AI-IDE-Switcher-releases/releases/download/${TAG}/${f}" \
+               --arg r2 "/releases/${TAG}/${f}" \
+               '.files += [{name: $name, size: $size, sha256: $sha256, url_github: $gh, url_r2: $r2}]' \
+               /tmp/assets/latest.json > /tmp/assets/latest.json.tmp
+            mv /tmp/assets/latest.json.tmp /tmp/assets/latest.json
+          done
+
+          echo "📋 Manifest:"
+          cat /tmp/assets/latest.json
+
+      - name: Upload to Cloudflare R2
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: |
+            TAG="${{ github.ref_name }}"
+
+            # Upload release assets
+            for f in /tmp/assets/*; do
+              [ -f "$f" ] || continue
+              filename=$(basename "$f")
+              [ "$filename" = "latest.json" ] && continue
+              echo "⬆ Uploading ${filename}..."
+              wrangler r2 object put "${{ env.R2_BUCKET }}/releases/${TAG}/${filename}" --file "$f" --content-type "application/octet-stream"
+            done
+
+            # Upload manifest
+            echo "⬆ Uploading latest.json..."
+            wrangler r2 object put "${{ env.R2_BUCKET }}/latest.json" --file /tmp/assets/latest.json --content-type "application/json"
+
+            # Upload download page from source repo
+            echo "⬆ Uploading download.html..."
+            wrangler r2 object put "${{ env.R2_BUCKET }}/download.html" --file source/download.html --content-type "text/html; charset=utf-8"
+
+            # Upload tutorial PDF from source repo
+            echo "⬆ Uploading tutorial.pdf..."
+            wrangler r2 object put "${{ env.R2_BUCKET }}/tutorial.pdf" --file "source/docs/AI IDE Switcher使用教程.pdf" --content-type "application/pdf"
+
+            echo "✅ All files uploaded to R2"
+
+      - name: Summary
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "## ✅ Release ${TAG} synced to R2" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Files" >> $GITHUB_STEP_SUMMARY
+          for f in /tmp/assets/*; do
+            [ -f "$f" ] || continue
+            filename=$(basename "$f")
+            [ "$filename" = "latest.json" ] && continue
+            echo "- **${filename}** → \`/releases/${TAG}/${filename}\`" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "- **latest.json** → \`/latest.json\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **download.html** → \`/download.html\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **tutorial.pdf** → \`/tutorial.pdf\`" >> $GITHUB_STEP_SUMMARY
