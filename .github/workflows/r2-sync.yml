@@ -22,6 +22,43 @@ jobs:
           token: ${{ secrets.PAT_TOKEN }}
           path: source
 
+      - name: Wait for release assets to finish uploading
+        run: |
+          TAG="${{ github.ref_name }}"
+          echo "⏳ Waiting for all release assets to be uploaded..."
+          
+          EXPECTED_FILES="AI-IDE-Switcher-${TAG#v}-portable.exe AI-IDE-Switcher-Setup-${TAG#v}.exe"
+          
+          for i in $(seq 1 30); do
+            ALL_FOUND=true
+            ASSETS=$(curl -sL \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/WanJiu-LF/AI-IDE-Switcher-releases/releases/tags/${TAG}")
+            
+            for expected in $EXPECTED_FILES; do
+              FOUND=$(echo "$ASSETS" | jq -r --arg name "$expected" '.assets[] | select(.name == $name) | .size')
+              if [ -z "$FOUND" ] || [ "$FOUND" = "0" ]; then
+                echo "  ⏳ ${expected} not yet uploaded..."
+                ALL_FOUND=false
+              else
+                echo "  ✅ ${expected} (${FOUND} bytes)"
+              fi
+            done
+            
+            if [ "$ALL_FOUND" = "true" ]; then
+              echo "✅ All assets uploaded!"
+              break
+            fi
+            
+            if [ "$i" = "30" ]; then
+              echo "⚠️ Timeout waiting for assets, proceeding anyway..."
+              break
+            fi
+            
+            echo "  Retrying in 30s... (attempt $i/30)"
+            sleep 30
+          done
+
       - name: Download release assets
         run: |
           TAG="${{ github.ref_name }}"
